@@ -77,10 +77,32 @@ impl TeslaClient {
     }
 
     fn call_auth_route(api_root: &str, params_map: HashMap<&str, &str>) -> Result<AuthResponse, TeslaError> {
-        let root_url = reqwest::Url::parse(api_root).expect("Could not parse API root");
-        let url = root_url.join("/oauth/token").expect("Could not parse API endpoint");
+        let new_auth_url = "https://auth.tesla.com/oauth2/v3/authorize";
+
+        // code_verifier = random_string(86)
+        // code_challenge = Base64.urlsafe_encode64(Digest::SHA256.hexdigest(code_verifier))
+        let code_challenge;
+
+        let mut new_params_map = HashMap::new();
+        new_params_map.insert("client_id", "ownerapi");
+        new_params_map.insert("code_challenge", code_challenge);
+        new_params_map.insert("code_challenge_method", "S256");
+        new_params_map.insert("redirect_uri", "https://auth.tesla.com/void/callback");
+        new_params_map.insert("response_type", "code");
+        new_params_map.insert("scope", "openid email offline_access");
+        new_params_map.insert("state", "123");
+        new_params_map.insert("login_hint", "my_email_goes_here@gmail.com");
+
+
+
+        let url = reqwest::Url::parse(new_auth_url).expect("Could not parse API URL");
+        //let root_url = reqwest::Url::parse(api_root).expect("Could not parse API root");
+        //let url = root_url.join("/oauth/token").expect("Could not parse API endpoint");
         let client = Client::new();
-        let response = client.post(url).json(&params_map).send()?;
+        let response = client.get(url).json(&params_map).send()?;
+
+        println!("{}", response.text()?);
+        // let response = client.post(url).json(&params_map).send()?;
         match response.status() {
             StatusCode::OK => Ok(response.json()?),
             StatusCode::UNAUTHORIZED => Err(TeslaError::AuthError), // TODO : Possibly copy response.text() into the error object.
