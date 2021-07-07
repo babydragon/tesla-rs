@@ -11,8 +11,8 @@ use tesla::{TeslaClient, Vehicle, VehicleClient, StateOfCharge, VehicleState, Cl
 use crate::config::InfluxConfig;
 use crate::error::{Error, TeslaApi, InfluxWrite};
 
-pub fn run_influx_reporter(cfg: InfluxConfig, vehicle_name: String, client: TeslaClient) -> Result<(), Error> {
-    let vehicle = client.get_vehicle_by_name(vehicle_name.as_str())
+pub async fn run_influx_reporter(cfg: InfluxConfig, vehicle_name: String, client: TeslaClient) -> Result<(), Error> {
+    let vehicle = client.get_vehicle_by_name(vehicle_name.as_str()).await
         .ok()
         .expect("could not find vehicle")
         .expect("could not find vehicle");
@@ -33,7 +33,7 @@ pub fn run_influx_reporter(cfg: InfluxConfig, vehicle_name: String, client: Tesl
     while running.load(Ordering::SeqCst) {
         if Instant::now() > next_poll_time {
             debug!("Reporting to influx");
-            check_and_report(&vclient, &influxc)?;
+            check_and_report(&vclient, &influxc).await?;
 
             next_poll_time = Instant::now() + Duration::from_secs(poll_duration);
         }
@@ -44,14 +44,14 @@ pub fn run_influx_reporter(cfg: InfluxConfig, vehicle_name: String, client: Tesl
     Ok(())
 }
 
-fn check_and_report(client: &VehicleClient, influx: &InfluxClient) -> Result<(), Error> {
+async fn check_and_report(client: &VehicleClient, influx: &InfluxClient) -> Result<(), Error> {
     info!("Attempting to fetch car data and report to influx");
-    let state = client.get().context(TeslaApi)?;
+    let state = client.get().await.context(TeslaApi)?;
     report_state(&state, &influx)?;
 
     match state.state.as_str() {
         "online" => {
-            report_online(client, &state, influx)
+            report_online(client, &state, influx).await
         },
         "offline" | "asleep" => {
             Ok(())
@@ -62,9 +62,9 @@ fn check_and_report(client: &VehicleClient, influx: &InfluxClient) -> Result<(),
     }
 }
 
-fn report_online(client: &VehicleClient, vehicle: &Vehicle, influx: &InfluxClient) -> Result<(), Error> {
+async fn report_online(client: &VehicleClient, vehicle: &Vehicle, influx: &InfluxClient) -> Result<(), Error> {
     info!("Vehicle is online, reporting full data to influx");
-    let all_data = client.get_all_data().context(TeslaApi)?;
+    let all_data = client.get_all_data().await.context(TeslaApi)?;
     debug!("Fetched all vehicle data: {:?}", all_data);
 
     report_soc(vehicle, &all_data.charge_state, influx)?;

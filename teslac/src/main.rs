@@ -14,7 +14,7 @@ use std::io::{stdin, stdout, Write};
 use clap::{App, Arg, ArgMatches, SubCommand};
 use dirs::home_dir;
 
-use tesla::TeslaClient;
+use tesla::{TeslaClient, Vehicle, TeslaError};
 
 use crate::config::Config;
 use crate::influx::run_influx_reporter;
@@ -23,14 +23,15 @@ mod config;
 mod influx;
 mod error;
 
-fn main() {
-    std::process::exit(match run() {
+#[tokio::main]
+async fn main() {
+    std::process::exit(match run().await {
         Ok(_) => 0,
         Err(_) => 1
     });
 }
 
-fn run() -> Result<(), ()> {
+async fn run() -> Result<(), ()> {
     let matches = App::new("Tesla Control")
         .version("0.2.0")
         .author("Ze'ev Klapow <zklapow@gmail.com>")
@@ -128,9 +129,9 @@ fn run() -> Result<(), ()> {
 
         let password = rpassword::prompt_password_stdout("Password: ").unwrap();
         let token = if debug_server.is_some() {
-            TeslaClient::authenticate_using_api_root(debug_server.unwrap(), email.as_str(), password.as_str())
+            TeslaClient::authenticate_using_api_root(debug_server.unwrap(), email.as_str(), password.as_str()).await
         } else {
-            TeslaClient::authenticate(email.as_str(), password.as_str())
+            TeslaClient::authenticate(email.as_str(), password.as_str()).await
         };
         return if token.is_ok() {
             println!("Your token is: {}", token.unwrap());
@@ -159,28 +160,40 @@ fn run() -> Result<(), ()> {
         .or(cfg.global.default_vehicle);
 
     if vehicle_name.is_none() {
-        error!("No default vehicle and no vehicle specified, aborting.");
+        error!("No default vehicle and no vehicle specified, will list all vehicles.");
+        let vehicles = client.get_vehicles().await;
+        match vehicles {
+            Ok(v_list) => {
+                println!("id, v_id, name, state");
+                for v in v_list {
+                    println!("{}, {}, {}, {}", v.id, v.vehicle_id, v.display_name, v.state);
+                }
+            }
+            Err(_) => {
+                error!("Fail to get vehicle list");
+            }
+        }
         return Err(());
     }
     let vehicle_name = vehicle_name.unwrap();
 
     if let Some(submatches) = matches.subcommand_matches("wake") {
-        cmd_wake(submatches, vehicle_name, client.clone());
+        cmd_wake(submatches, vehicle_name, client.clone()).await;
     } else if let Some(_submatches) = matches.subcommand_matches("get_all_data") {
-        get_all_data(vehicle_name, client.clone());
+        get_all_data(vehicle_name, client.clone()).await;
     } else if let Some(_submatches) = matches.subcommand_matches("flash_lights") {
-        flash_lights(vehicle_name, client.clone());
+        flash_lights(vehicle_name, client.clone()).await;
     } else if let Some(_submatches) = matches.subcommand_matches("door_unlock") {
-        door_unlock(vehicle_name, client.clone());
+        door_unlock(vehicle_name, client.clone()).await;
     } else if let Some(_submatches) = matches.subcommand_matches("door_lock") {
-        door_lock(vehicle_name, client.clone());
+        door_lock(vehicle_name, client.clone()).await;
     } else if let Some(_submatches) = matches.subcommand_matches("influx") {
         if cfg.influx.is_none() {
             error!("No influx configuration present, cannot start influx reporter!");
             return Err(());
         }
 
-        if let Err(e) = run_influx_reporter(cfg.influx.unwrap(), vehicle_name, client.clone()) {
+        if let Err(e) = run_influx_reporter(cfg.influx.unwrap(), vehicle_name, client.clone()).await {
             error!("Error in influx reporter: {}", e);
             exit(1);
         }
@@ -217,11 +230,11 @@ fn get_config(alternate_config_file_path: Option<&str>, has_debug_server: bool) 
     cfg
 }
 
-fn cmd_wake(matches: &ArgMatches, name: String, client: TeslaClient) {
-    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).expect("Could not load vehicles") {
+async fn cmd_wake(matches: &ArgMatches<'_>, name: String, client: TeslaClient) {
+    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).await.expect("Could not load vehicles") {
         let vclient = client.vehicle(vehicle.id);
         info!("Waking up");
-        match vclient.wake_up() {
+        match vclient.wake_up().await {
             Ok(_) => info!("Sent wakeup command to {}", name),
             Err(e) => error!("Wake up failed {:?}", e)
         }
@@ -234,7 +247,7 @@ fn cmd_wake(matches: &ArgMatches, name: String, client: TeslaClient) {
             );
 
             loop {
-                if let Some(vehicle) = vclient.get().ok() {
+                if let Some(vehicle) = vclient.get().await.ok() {
                     if vehicle.state == "online" {
                         break;
                     } else {
@@ -250,11 +263,12 @@ fn cmd_wake(matches: &ArgMatches, name: String, client: TeslaClient) {
     }
 }
 
-fn get_all_data(name: String, client: TeslaClient) {
-    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).expect("Could not load vehicles") {
+async fn get_all_data(name: String, client: TeslaClient) {
+    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).await.expect("Could not load vehicles") {
+        dbg!(&vehicle);
         let vclient = client.vehicle(vehicle.id);
         info!("getting all data");
-        match vclient.get_all_data() {
+        match vclient.get_all_data().await {
             Ok(data) => info!("{:#?}", data),
             Err(e) => error!("get data failed {:?}", e)
         }
@@ -263,11 +277,11 @@ fn get_all_data(name: String, client: TeslaClient) {
     }
 }
 
-fn flash_lights(name: String, client: TeslaClient) {
-    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).expect("Could not load vehicles") {
+async fn flash_lights(name: String, client: TeslaClient) {
+    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).await.expect("Could not load vehicles") {
         let vclient = client.vehicle(vehicle.id);
         info!("flashing lights");
-        match vclient.flash_lights() {
+        match vclient.flash_lights().await {
             Ok(_) => info!("Success"),
             Err(e) => error!("flashing lights failed {:?}", e)
         }
@@ -276,11 +290,11 @@ fn flash_lights(name: String, client: TeslaClient) {
     }
 }
 
-fn door_unlock(name: String, client: TeslaClient) {
-    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).expect("Could not load vehicles") {
+async fn door_unlock(name: String, client: TeslaClient) {
+    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).await.expect("Could not load vehicles") {
         let vclient = client.vehicle(vehicle.id);
         info!("unlocking doors");
-        match vclient.door_unlock() {
+        match vclient.door_unlock().await {
             Ok(_) => info!("Success"),
             Err(e) => error!("unlocking doors failed {:?}", e)
         }
@@ -289,11 +303,11 @@ fn door_unlock(name: String, client: TeslaClient) {
     }
 }
 
-fn door_lock(name: String, client: TeslaClient) {
-    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).expect("Could not load vehicles") {
+async fn door_lock(name: String, client: TeslaClient) {
+    if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).await.expect("Could not load vehicles") {
         let vclient = client.vehicle(vehicle.id);
         info!("locking doors");
-        match vclient.door_lock() {
+        match vclient.door_lock().await {
             Ok(_) => info!("Success"),
             Err(e) => error!("locking doors failed {:?}", e)
         }
