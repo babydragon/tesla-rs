@@ -4,8 +4,9 @@ extern crate influx_db_client;
 extern crate log;
 extern crate rpassword;
 
+use std::borrow::Borrow;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::thread::sleep;
 use std::time::Duration;
@@ -16,7 +17,7 @@ use dirs::home_dir;
 
 use tesla::{TeslaClient, Vehicle, TeslaError};
 
-use crate::config::Config;
+use crate::config::{Config, GlobalConfig};
 use crate::influx::run_influx_reporter;
 
 mod config;
@@ -121,18 +122,7 @@ async fn run() -> Result<(), ()> {
     }
 
     if matches.is_present("oauth") {
-        let mut email = String::new();
-        print!("Please enter your email: ");
-        let _ = stdout().flush();
-        stdin().read_line(&mut email).expect("Did not enter a correct string");
-        email = email.replace("\n", "").replace("\r", "");
-
-        let password = rpassword::prompt_password_stdout("Password: ").unwrap();
-        let token = if debug_server.is_some() {
-            TeslaClient::authenticate_using_api_root(debug_server.unwrap(), email.as_str(), password.as_str()).await
-        } else {
-            TeslaClient::authenticate(email.as_str(), password.as_str()).await
-        };
+        let token = auth_interactive(debug_server).await;
         return if token.is_ok() {
             println!("Your token is: {}", token.unwrap());
             Ok(())
@@ -142,40 +132,67 @@ async fn run() -> Result<(), ()> {
         }
     }
 
-    let cfg = get_config(matches.value_of("config"), debug_server.is_some());
+    let config_path_default = home_dir()
+        .unwrap_or(PathBuf::from("/"))
+        .join(".teslac");
 
-    let client = if debug_server.is_some() {
-        TeslaClient::new(debug_server.unwrap(), cfg.global.api_token.as_str())
-    } else {
-        TeslaClient::default(cfg.global.api_token.as_str())
+    let config_path = matches.value_of("config")
+        .map(|p| PathBuf::from(p))
+        .unwrap_or(config_path_default);
+    let cfg = get_config(config_path.borrow(), debug_server.is_some());
+
+    let mut config = match cfg {
+        None => {
+            // without config, go to auth progress
+            let token = auth_interactive(debug_server).await;
+            match token {
+                Ok(t) => {
+                    let new_config = Config {
+                        global: GlobalConfig {
+                            api_token: t,
+                            default_vehicle: None,
+                            default_vehicle_id: None,
+                            logspec: Some("info".to_string())
+                        },
+                        influx: None
+                    };
+
+                    if let Ok(str_content) = toml::to_string(&new_config) {
+                        fs::write(&config_path, str_content);
+                    }
+
+                    new_config
+                }
+                Err(_) => {
+                    return Err(())
+                }
+            }
+        }
+        Some(c) => c
     };
 
-    flexi_logger::Logger::with_env_or_str(cfg.global.logspec.unwrap_or("".to_owned()))
+    let client = if debug_server.is_some() {
+        TeslaClient::new(debug_server.unwrap(), config.global.api_token.as_str())
+    } else {
+        TeslaClient::default(config.global.api_token.as_str())
+    };
+
+    flexi_logger::Logger::with_env_or_str(config.global.logspec.clone().unwrap_or("".to_owned()))
         .format(flexi_logger::colored_with_thread)
         .start()
         .unwrap();
 
     let vehicle_name = matches.value_of("vehicle")
         .map(|s| s.to_owned())
-        .or(cfg.global.default_vehicle);
+        .or(config.global.default_vehicle.clone());
 
-    if vehicle_name.is_none() {
-        error!("No default vehicle and no vehicle specified, will list all vehicles.");
-        let vehicles = client.get_vehicles().await;
-        match vehicles {
-            Ok(v_list) => {
-                println!("id, v_id, name, state");
-                for v in v_list {
-                    println!("{}, {}, {}, {}", v.id, v.vehicle_id, v.display_name, v.state);
-                }
-            }
-            Err(_) => {
-                error!("Fail to get vehicle list");
-            }
+    let vehicle_name = match vehicle_name {
+        None => {
+            let result = choose_vehicle(&mut config, &config_path, client.clone()).await;
+            result.expect("fail to choose vehicle")
         }
-        return Err(());
-    }
-    let vehicle_name = vehicle_name.unwrap();
+        Some(n) => n
+    };
 
     if let Some(submatches) = matches.subcommand_matches("wake") {
         cmd_wake(submatches, vehicle_name, client.clone()).await;
@@ -188,12 +205,12 @@ async fn run() -> Result<(), ()> {
     } else if let Some(_submatches) = matches.subcommand_matches("door_lock") {
         door_lock(vehicle_name, client.clone()).await;
     } else if let Some(_submatches) = matches.subcommand_matches("influx") {
-        if cfg.influx.is_none() {
+        if config.influx.is_none() {
             error!("No influx configuration present, cannot start influx reporter!");
             return Err(());
         }
 
-        if let Err(e) = run_influx_reporter(cfg.influx.unwrap(), vehicle_name, client.clone()).await {
+        if let Err(e) = run_influx_reporter(config.influx.unwrap(), vehicle_name, client.clone()).await {
             error!("Error in influx reporter: {}", e);
             exit(1);
         }
@@ -204,14 +221,10 @@ async fn run() -> Result<(), ()> {
     Ok(())
 }
 
-fn get_config(alternate_config_file_path: Option<&str>, has_debug_server: bool) -> Config {
-    let config_path_default = home_dir()
-        .unwrap_or(PathBuf::from("/"))
-        .join(".teslac");
-
-    let config_path = alternate_config_file_path
-        .map(|p| PathBuf::from(p))
-        .unwrap_or(config_path_default);
+fn get_config(config_path: &Path, has_debug_server: bool) -> Option<Config> {
+    if !config_path.exists() {
+        return None;
+    }
 
     // provide a default config if using the debug server
     let config_data = if has_debug_server {
@@ -227,7 +240,7 @@ fn get_config(alternate_config_file_path: Option<&str>, has_debug_server: bool) 
         fs::read_to_string(config_path).expect("Cannot read config")
     };
     let cfg: Config = toml::from_str(config_data.as_str()).expect("Cannot parse config");
-    cfg
+    Some(cfg)
 }
 
 async fn cmd_wake(matches: &ArgMatches<'_>, name: String, client: TeslaClient) {
@@ -313,5 +326,58 @@ async fn door_lock(name: String, client: TeslaClient) {
         }
     } else {
         error!("Could not find vehicle named {}", name);
+    }
+}
+
+async fn auth_interactive(debug_server: Option<&str>) -> Result<String, TeslaError> {
+    let mut email = String::new();
+    print!("Please enter your email: ");
+    let _ = stdout().flush();
+    stdin().read_line(&mut email).expect("Did not enter a correct string");
+    email = email.replace("\n", "").replace("\r", "");
+
+    let password = rpassword::prompt_password_stdout("Password: ").unwrap();
+    let token = if debug_server.is_some() {
+        TeslaClient::authenticate_using_api_root(debug_server.unwrap(), email.as_str(), password.as_str()).await
+    } else {
+        TeslaClient::authenticate(email.as_str(), password.as_str()).await
+    };
+
+    token
+}
+
+async fn choose_vehicle(config: &mut Config, config_path: &PathBuf, client: TeslaClient) -> Result<String, TeslaError> {
+    println!("No default vehicle and no vehicle specified, please select:");
+    let vehicles = client.get_vehicles().await;
+    match vehicles {
+        Ok(v_list) => {
+            println!("index, name, state");
+            for (i, v) in v_list.iter().enumerate() {
+                println!("[{}], {}, {}", i + 1, v.display_name, v.state);
+            }
+            print!("Please enter index: ");
+            let _ = stdout().flush();
+            let mut index_to_input: String = String::new();
+            stdin().read_line(&mut index_to_input).expect("Did not enter a correct index");
+            index_to_input = index_to_input.replace("\n", "").replace("\r", "");
+
+            let i: usize = index_to_input.parse().expect("Did not enter a correct index");
+            if i > v_list.len() || i < 1 {
+                return Err(TeslaError::SystemError);
+            }
+
+            config.global.default_vehicle_id = Some(v_list[i - 1].id);
+            config.global.default_vehicle = Some(v_list[i - 1].display_name.clone());
+
+            if let Ok(str_content) = toml::to_string(config) {
+                fs::write(config_path, str_content);
+            }
+
+            Ok(v_list[i - 1].display_name.clone())
+        }
+        Err(e) => {
+            error!("Fail to get vehicle list");
+            Err(e)
+        }
     }
 }

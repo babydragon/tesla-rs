@@ -86,7 +86,10 @@ impl TeslaClient {
         });
         let client = Client::builder().cookie_store(true).redirect(policy).build().expect("Fail to build auth client");
 
+        dbg!("start auth steps");
+
         // step 1 get cookie and hidden form field
+        dbg!("auth step1: Obtain the login page");
         let code_verifier: String = rand::thread_rng().sample_iter(rand::distributions::Alphanumeric).take(86).map(char::from).collect();
         let mut hasher = Sha256::new();
         hasher.update(code_verifier.clone());
@@ -111,6 +114,7 @@ impl TeslaClient {
         dbg!("{}", body.clone());
 
         // step 2 post to get token
+        dbg!("auth step2: Obtain an authorization code");
         query_map = HashMap::new();
         query_map.insert("client_id", "ownerapi");
         query_map.insert("code_challenge", code_challenge.as_str());
@@ -129,7 +133,7 @@ impl TeslaClient {
         dbg!("code: {}", code.as_str());
 
         // step 3
-
+        dbg!("auth step3: Exchange authorization code for bearer token");
         let mut oauth_token_params = HashMap::new();
         oauth_token_params.insert("grant_type", "authorization_code");
         oauth_token_params.insert("client_id", "ownerapi");
@@ -153,6 +157,7 @@ impl TeslaClient {
         dbg!("oauth token fetch success {}", &oauth_token);
 
         // step 4
+        dbg!("auth step4: Exchange bearer token for access token");
         let mut sso_token_params = HashMap::new();
         sso_token_params.insert("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer");
         sso_token_params.insert("client_id", "81527cff06843c8634fdc09e8ac0abefb46ac849f38fe1e431c2ef2106796384");
@@ -174,6 +179,7 @@ impl TeslaClient {
             .map(|e| (e.attr("name").unwrap(), e.attr("value").unwrap())).collect();
         form_values.insert("identity", email);
         form_values.insert("credential", password);
+        form_values.insert("privacy_consent", "1");
 
         let resp = client.post(url).form(&form_values).send().await?;
 
@@ -192,8 +198,8 @@ impl TeslaClient {
             }
         } else {
             // still redirect to a login page
-            dbg!("post redirection to login page, try post again");
             let final_url = resp.url().clone();
+            dbg!("post redirection to login page {}, try post again", &final_url);
             let post_resp_body = resp.text().await?;
             TeslaClient::try_post_to_fetch_token(final_url, post_resp_body.as_str(), email, password, client).await
         }

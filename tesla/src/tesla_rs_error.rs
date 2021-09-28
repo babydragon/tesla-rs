@@ -26,7 +26,8 @@ pub enum TeslaError {
     ParseAppError(AppError),
     AuthError,
     InvalidTokenError,
-    ParseReqwest(reqwest::Error)
+    ParseReqwest(reqwest::Error),
+    SystemError
 }
 
 impl error::Error for TeslaError {
@@ -36,6 +37,7 @@ impl error::Error for TeslaError {
             TeslaError::AuthError => None,
             TeslaError::InvalidTokenError => None,
             TeslaError::ParseReqwest(ref e) => Some(e),
+            TeslaError::SystemError => None
         }
     }
 }
@@ -47,6 +49,7 @@ impl fmt::Display for TeslaError {
             TeslaError::AuthError => write!(f, "Authentication error!"),
             TeslaError::InvalidTokenError => write!(f, "Invalid token error!"),
             TeslaError::ParseReqwest(ref e) => e.fmt(f),
+            TeslaError::SystemError => write!(f, "System error!"),
         }
     }
 }

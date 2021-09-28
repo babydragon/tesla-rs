@@ -1,19 +1,21 @@
 use serde::Deserialize;
+use serde::Serialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub global: GlobalConfig,
     pub influx: Option<InfluxConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GlobalConfig {
     pub api_token: String,
     pub default_vehicle: Option<String>,
+    pub default_vehicle_id: Option<u64>,
     pub logspec: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InfluxConfig {
     pub url: Option<String>,
     pub user: Option<String>,
