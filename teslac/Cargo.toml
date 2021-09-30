@@ -22,3 +22,4 @@ rpassword = "5.0.1"
 influx_db_client = { git="https://github.com/zklapow/InfluxDBClient-rs" }
 native-tls = "0.2.7"
 snafu = "0.6.10"
+rusqlite = "0.25"

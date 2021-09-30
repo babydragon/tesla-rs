@@ -5,6 +5,7 @@ use serde::Serialize;
 pub struct Config {
     pub global: GlobalConfig,
     pub influx: Option<InfluxConfig>,
+    pub sqlite: Option<SqliteConfig>
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -22,4 +23,9 @@ pub struct InfluxConfig {
     pub password: Option<String>,
     pub database: Option<String>,
     pub interval: Option<u64>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SqliteConfig {
+    pub file: String
 }

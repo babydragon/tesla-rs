@@ -272,6 +272,10 @@ impl TeslaClient {
             err = TeslaError::ParseAppError(AppError {
                 message: "Not found error (404)".to_owned()
             });
+        } else if response.status() == 408 {
+            err = TeslaError::ParseAppError(AppError {
+                message: "Connect Timeout (408)".to_owned()
+            });
         }
         err
     }

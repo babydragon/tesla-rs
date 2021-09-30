@@ -6,16 +6,19 @@ extern crate rpassword;
 
 use std::borrow::Borrow;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::io::{stdin, stdout, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{App, Arg, ArgMatches, SubCommand};
 use dirs::home_dir;
 
-use tesla::{TeslaClient, Vehicle, TeslaError};
+use tesla::{TeslaClient, Vehicle, TeslaError, FullVehicleData};
 
 use crate::config::{Config, GlobalConfig};
 use crate::influx::run_influx_reporter;
@@ -23,6 +26,7 @@ use crate::influx::run_influx_reporter;
 mod config;
 mod influx;
 mod error;
+mod sink;
 
 #[tokio::main]
 async fn main() {
@@ -114,6 +118,10 @@ async fn run() -> Result<(), ()> {
                         .takes_value(false)
                 )
         )
+        .subcommand(
+            SubCommand::with_name("daemon")
+                .about("Start daemon mode to write vehicle data")
+        )
         .get_matches();
 
     let debug_server = matches.value_of("debug-server");
@@ -154,7 +162,8 @@ async fn run() -> Result<(), ()> {
                             default_vehicle_id: None,
                             logspec: Some("info".to_string())
                         },
-                        influx: None
+                        influx: None,
+                        sqlite: None
                     };
 
                     if let Ok(str_content) = toml::to_string(&new_config) {
@@ -214,6 +223,8 @@ async fn run() -> Result<(), ()> {
             error!("Error in influx reporter: {}", e);
             exit(1);
         }
+    } else if let Some(_submatches) = matches.subcommand_matches("daemon") {
+        start_read_daemon(config, vehicle_name, client.clone()).await;
     } else {
         println!("No command specified")
     }
@@ -380,4 +391,66 @@ async fn choose_vehicle(config: &mut Config, config_path: &PathBuf, client: Tesl
             Err(e)
         }
     }
+}
+
+async fn start_read_daemon(cfg: Config, vehicle_name: String, client: TeslaClient) {
+    let sink = sink::new_sink(cfg);
+
+    if sink.is_none() {
+        error!("fail to get sink from config");
+        return;
+    }
+
+    let sink = sink.unwrap();
+
+    let vehicle = client.get_vehicle_by_name(vehicle_name.as_str()).await
+        .ok()
+        .expect("could not find vehicle")
+        .expect("could not find vehicle");
+
+    let vclient = client.vehicle(vehicle.id);
+
+    let running = Arc::new(AtomicBool::new(true));
+
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error setting ctrl-c handler");
+
+    let default_poll_duration = 10; // default poll duration: 10s
+    let mut poll_duration = default_poll_duration;
+
+    let mut  next_poll_time = Instant::now();
+    while running.load(Ordering::SeqCst) {
+        if Instant::now() > next_poll_time {
+            debug!("Reporting to sink");
+            if let Ok(v) = vclient.get().await {
+                if v.state == "online" {
+                    match vclient.get_all_data().await {
+                        Ok(d) => {
+                            sink.save(&d);
+                            poll_duration = default_poll_duration;
+                        }
+
+                        Err(e) => {
+                            error!("fail to fetch vehicle data: {}", e);
+                            poll_duration *= 2;
+                        }
+                    }
+                } else {
+                    info!("vehicle is not online, waiting");
+                    poll_duration *= 2;
+                }
+            } else {
+                error!("fail to fetch vehicle data");
+                poll_duration *= 2;
+            }
+
+            next_poll_time = Instant::now() + Duration::from_secs(poll_duration);
+        }
+
+        sleep(Duration::from_millis(poll_duration));
+    }
+
+    sink.destroy();
 }
