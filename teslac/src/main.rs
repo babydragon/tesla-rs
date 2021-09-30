@@ -418,6 +418,7 @@ async fn start_read_daemon(cfg: Config, vehicle_name: String, client: TeslaClien
     }).expect("Error setting ctrl-c handler");
 
     let default_poll_duration = 10; // default poll duration: 10s
+    let max_poll_duration = 600; // max poll duration: 10min
     let mut poll_duration = default_poll_duration;
 
     let mut  next_poll_time = Instant::now();
@@ -444,6 +445,10 @@ async fn start_read_daemon(cfg: Config, vehicle_name: String, client: TeslaClien
             } else {
                 error!("fail to fetch vehicle data");
                 poll_duration *= 2;
+            }
+
+            if poll_duration > max_poll_duration {
+                poll_duration = max_poll_duration;
             }
 
             next_poll_time = Instant::now() + Duration::from_secs(poll_duration);
