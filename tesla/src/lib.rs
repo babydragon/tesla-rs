@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-
-use http::{StatusCode, HeaderMap};
-pub use reqwest;
+use reqwest;
 use reqwest::{Client, Url};
 use reqwest::header;
 use reqwest::redirect::Policy;
@@ -13,8 +11,6 @@ use rand::Rng;
 use sha2::{Sha256, Digest};
 use select::document::Document;
 use select::predicate::{Attr, Name, And};
-use crate::reqwest::header::HeaderValue;
-use std::borrow::Borrow;
 
 use async_recursion::async_recursion;
 
@@ -61,20 +57,35 @@ pub struct VehicleClient {
 }
 
 impl TeslaClient {
-    pub async fn authenticate(email: &str, password: &str) -> Result<String, TeslaError> {
+    pub async fn authenticate(email: &str, password: &str) -> Result<OAuthToken, TeslaError> {
         TeslaClient::authenticate_using_api_root(DEFAULT_BASE_URI, email, password).await
     }
 
-    pub async fn authenticate_using_api_root(api_root: &str, email: &str, password: &str) -> Result<String, TeslaError> {
+    pub async fn authenticate_using_api_root(api_root: &str, email: &str, password: &str) -> Result<OAuthToken, TeslaError> {
         let resp = TeslaClient::call_auth_route(api_root, email, password).await?;
 
         let expires_in_days = resp.expires_in / 60 / 60 / 24;
         println!("The access token will expire in {} days", expires_in_days);
-        Ok(resp.access_token)
+        Ok(resp)
     }
 
-    async fn call_auth_route(api_root: &str, email: &str, password: &str) -> Result<AuthResponse, TeslaError> {
-        let auth_endpoint = "https://auth.tesla.com/oauth2/v3/authorize";
+    pub async fn refresh_token(refresh_token: &str) -> Result<OAuthToken, TeslaError> {
+        let mut oauth_refresh_params = HashMap::new();
+        oauth_refresh_params.insert("grant_type", "refresh_token");
+        oauth_refresh_params.insert("client_id", "ownerapi");
+        oauth_refresh_params.insert("scope", "openid email offline_access");
+        oauth_refresh_params.insert("refresh_token", refresh_token);
+
+        let client = Client::builder().build().expect("fail to build refresh client");
+
+        let oauth_token_url = Url::parse("https://auth.tesla.cn/oauth2/v3/token").expect("Could not parse oauth token URL");
+        let oauth_response = client.post(oauth_token_url).json(&oauth_refresh_params).send().await?;
+
+        TeslaClient::parse_oauth_token(oauth_response).await
+    }
+
+    async fn call_auth_route(_api_root: &str, email: &str, password: &str) -> Result<OAuthToken, TeslaError> {
+        let auth_endpoint = "https://auth.tesla.cn/oauth2/v3/authorize";
 
         let policy = Policy::custom(|attempt| {
             dbg!("redirect to {}", attempt.url());
@@ -145,30 +156,8 @@ impl TeslaClient {
         let oauth_token_url = reqwest::Url::parse("https://auth.tesla.cn/oauth2/v3/token").expect("Could not parse oauth token URL");
         let oauth_response = client.post(oauth_token_url).json(&oauth_token_params).send().await?;
 
-        let oauth_token = if oauth_response.status().is_success() {
-            let oauth_token = oauth_response.json::<OAuthToken>().await?;
-            dbg!("oauth response content {}", &oauth_token);
-            oauth_token
-        } else {
-            dbg!("oauth response fail,  content {}", oauth_response.text().await?);
-            return Err(TeslaError::AuthError);
-        };
-
-        dbg!("oauth token fetch success {}", &oauth_token);
-
-        // step 4
-        dbg!("auth step4: Exchange bearer token for access token");
-        let mut sso_token_params = HashMap::new();
-        sso_token_params.insert("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer");
-        sso_token_params.insert("client_id", "81527cff06843c8634fdc09e8ac0abefb46ac849f38fe1e431c2ef2106796384");
-        sso_token_params.insert("client_secret", "c7257eb71a564034f9419ee651c7d0e5f7aa6bfbd18bafb5c5c033b093bb2fa3");
-
-        let sso_token_url = reqwest::Url::parse("https://owner-api.teslamotors.com/oauth/token").expect("Could not parse sso token URL");
-        let sso_response = client.post(sso_token_url).bearer_auth(oauth_token.access_token).json(&sso_token_params).send().await?.json::<AuthResponse>().await?;
-
-        dbg!("sso token fetch success {}", &sso_response);
-
-        Ok(sso_response)
+        let oauth_token = TeslaClient::parse_oauth_token(oauth_response).await;
+        oauth_token
     }
 
     #[async_recursion(?Send)]
@@ -202,6 +191,17 @@ impl TeslaClient {
             dbg!("post redirection to login page {}, try post again", &final_url);
             let post_resp_body = resp.text().await?;
             TeslaClient::try_post_to_fetch_token(final_url, post_resp_body.as_str(), email, password, client).await
+        }
+    }
+
+    async fn parse_oauth_token(oauth_response: reqwest::Response) -> Result<OAuthToken, TeslaError> {
+        if oauth_response.status().is_success() {
+            let oauth_token = oauth_response.json::<OAuthToken>().await?;
+            dbg!("oauth response content {}", &oauth_token);
+            Ok(oauth_token)
+        } else {
+            dbg!("oauth response fail,  content {}", oauth_response.text().await?);
+            Err(TeslaError::AuthError)
         }
     }
 

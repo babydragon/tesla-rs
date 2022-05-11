@@ -6,21 +6,21 @@ extern crate rpassword;
 
 use std::borrow::Borrow;
 use std::fs;
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::io::{stdin, stdout, Write};
+use std::ops::Add;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{App, Arg, ArgMatches, SubCommand};
 use dirs::home_dir;
 
-use tesla::{TeslaClient, Vehicle, TeslaError, FullVehicleData};
+use tesla::{TeslaClient, TeslaError, OAuthToken};
 
-use crate::config::{Config, GlobalConfig};
+use crate::config::{Config, GlobalConfig, Token};
 use crate::influx::run_influx_reporter;
 
 mod config;
@@ -132,7 +132,7 @@ async fn run() -> Result<(), ()> {
     if matches.is_present("oauth") {
         let token = auth_interactive(debug_server).await;
         return if token.is_ok() {
-            println!("Your token is: {}", token.unwrap());
+            println!("Your token is: {}", token.unwrap().access_token);
             Ok(())
         } else {
             println!("Token error: {}", token.err().unwrap());
@@ -155,9 +155,17 @@ async fn run() -> Result<(), ()> {
             let token = auth_interactive(debug_server).await;
             match token {
                 Ok(t) => {
+                    let expires_in = t.expires_in;
+                    // get current timestamp
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+                    let expire_time = now.add(Duration::from_secs(expires_in as u64));
                     let new_config = Config {
+                        token: Token {
+                            access_token: t.access_token,
+                            refresh_token: t.refresh_token,
+                            expires_ts: expire_time.as_secs(),
+                        },
                         global: GlobalConfig {
-                            api_token: t,
                             default_vehicle: None,
                             default_vehicle_id: None,
                             logspec: Some("info".to_string())
@@ -166,24 +174,63 @@ async fn run() -> Result<(), ()> {
                         sqlite: None
                     };
 
-                    if let Ok(str_content) = toml::to_string(&new_config) {
-                        fs::write(&config_path, str_content);
+                    match toml::ser::to_string(&new_config) {
+                        Ok(str_content) => {
+                            let _ = fs::write(&config_path, str_content);
+                            println!("Config file created at {}", config_path.display());
+                        }
+                        Err(e) => {
+                            eprintln!("Error writing config: {}", e);
+                        }
                     }
 
                     new_config
                 }
-                Err(_) => {
+                Err(e) => {
+                    println!("failed to get token: {}", e);
                     return Err(())
                 }
             }
         }
-        Some(c) => c
+        Some(mut c) => {
+            let expires_ts = c.token.expires_ts;
+            // get current timestamp
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            if now.as_secs() >= expires_ts {
+                println!("Token expired, try to refresh it");
+                // token expired, refresh
+                let token_result = TeslaClient::refresh_token(c.token.refresh_token.as_str()).await;
+
+                match token_result {
+                    Ok(token) => {
+                        c.token.access_token = token.access_token;
+                        c.token.refresh_token = token.refresh_token;
+
+                        // calculate new expire time
+                        let new_expire_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().add(Duration::from_secs(token.expires_in as u64));
+                        c.token.expires_ts = new_expire_ts.as_secs();
+
+                        if let Ok(str_content) = toml::to_string(&c) {
+                            let _ = fs::write(&config_path, str_content);
+                        }
+
+                        c
+                    }
+                    Err(e) => {
+                        eprintln!("failed to refresh token: {}", e);
+                        return Err(())
+                    }
+                }
+            } else {
+                c
+            }
+        }
     };
 
     let client = if debug_server.is_some() {
-        TeslaClient::new(debug_server.unwrap(), config.global.api_token.as_str())
+        TeslaClient::new(debug_server.unwrap(), config.token.access_token.as_str())
     } else {
-        TeslaClient::default(config.global.api_token.as_str())
+        TeslaClient::default(config.token.access_token.as_str())
     };
 
     flexi_logger::Logger::with_env_or_str(config.global.logspec.clone().unwrap_or("".to_owned()))
@@ -340,7 +387,7 @@ async fn door_lock(name: String, client: TeslaClient) {
     }
 }
 
-async fn auth_interactive(debug_server: Option<&str>) -> Result<String, TeslaError> {
+async fn auth_interactive(debug_server: Option<&str>) -> Result<OAuthToken, TeslaError> {
     let mut email = String::new();
     print!("Please enter your email: ");
     let _ = stdout().flush();
@@ -381,7 +428,7 @@ async fn choose_vehicle(config: &mut Config, config_path: &PathBuf, client: Tesl
             config.global.default_vehicle = Some(v_list[i - 1].display_name.clone());
 
             if let Ok(str_content) = toml::to_string(config) {
-                fs::write(config_path, str_content);
+                let _ = fs::write(config_path, str_content);
             }
 
             Ok(v_list[i - 1].display_name.clone())

@@ -124,7 +124,6 @@ pub struct GuiSettings {
 pub struct OAuthToken {
     pub access_token: String,
     pub refresh_token: String,
-    pub state: String,
     pub expires_in: i32,
     pub token_type: String,
 }
