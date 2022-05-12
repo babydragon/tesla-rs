@@ -171,6 +171,7 @@ async fn run() -> Result<(), ()> {
                             logspec: Some("info".to_string())
                         },
                         influx: None,
+                        #[cfg(feature = "sqlite")]
                         sqlite: None
                     };
 
@@ -192,38 +193,8 @@ async fn run() -> Result<(), ()> {
                 }
             }
         }
-        Some(mut c) => {
-            let expires_ts = c.token.expires_ts;
-            // get current timestamp
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            if now.as_secs() >= expires_ts {
-                println!("Token expired, try to refresh it");
-                // token expired, refresh
-                let token_result = TeslaClient::refresh_token(c.token.refresh_token.as_str()).await;
-
-                match token_result {
-                    Ok(token) => {
-                        c.token.access_token = token.access_token;
-                        c.token.refresh_token = token.refresh_token;
-
-                        // calculate new expire time
-                        let new_expire_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().add(Duration::from_secs(token.expires_in as u64));
-                        c.token.expires_ts = new_expire_ts.as_secs();
-
-                        if let Ok(str_content) = toml::to_string(&c) {
-                            let _ = fs::write(&config_path, str_content);
-                        }
-
-                        c
-                    }
-                    Err(e) => {
-                        eprintln!("failed to refresh token: {}", e);
-                        return Err(())
-                    }
-                }
-            } else {
-                c
-            }
+        Some(c) => {
+            try_refresh_token(c, &config_path).await.expect("failed to refresh token")
         }
     };
 
@@ -271,7 +242,7 @@ async fn run() -> Result<(), ()> {
             exit(1);
         }
     } else if let Some(_submatches) = matches.subcommand_matches("daemon") {
-        start_read_daemon(config, vehicle_name, client.clone()).await;
+        start_read_daemon(config, &config_path, vehicle_name, client.clone()).await;
     } else {
         println!("No command specified")
     }
@@ -338,6 +309,10 @@ async fn get_all_data(name: String, client: TeslaClient) {
     if let Some(vehicle) = client.get_vehicle_by_name(name.as_str()).await.expect("Could not load vehicles") {
         dbg!(&vehicle);
         let vclient = client.vehicle(vehicle.id);
+        if vehicle.state != "online" {
+            error!("{} is not online, cannot get data", name);
+            return;
+        }
         info!("getting all data");
         match vclient.get_all_data().await {
             Ok(data) => info!("{:#?}", data),
@@ -440,8 +415,8 @@ async fn choose_vehicle(config: &mut Config, config_path: &PathBuf, client: Tesl
     }
 }
 
-async fn start_read_daemon(cfg: Config, vehicle_name: String, client: TeslaClient) {
-    let sink = sink::new_sink(cfg);
+async fn start_read_daemon(cfg: Config, config_path: &PathBuf, vehicle_name: String, client: TeslaClient) {
+    let sink = sink::new_sink(cfg.clone());
 
     if sink.is_none() {
         error!("fail to get sink from config");
@@ -455,7 +430,7 @@ async fn start_read_daemon(cfg: Config, vehicle_name: String, client: TeslaClien
         .expect("could not find vehicle")
         .expect("could not find vehicle");
 
-    let vclient = client.vehicle(vehicle.id);
+    let mut vclient = client.vehicle(vehicle.id);
 
     let running = Arc::new(AtomicBool::new(true));
 
@@ -471,6 +446,15 @@ async fn start_read_daemon(cfg: Config, vehicle_name: String, client: TeslaClien
     let mut  next_poll_time = Instant::now();
     while running.load(Ordering::SeqCst) {
         if Instant::now() > next_poll_time {
+            match try_refresh_token(cfg.clone(), config_path).await {
+                Ok(config) => {
+                    let new_client = TeslaClient::default(config.token.access_token.as_str());
+                    vclient = new_client.vehicle(vehicle.id);
+                }
+                Err(e) => {
+                    error!("fail to refresh token: {}", e);
+                }
+            }
             debug!("Reporting to sink");
             if let Ok(v) = vclient.get().await {
                 if v.state == "online" {
@@ -505,4 +489,38 @@ async fn start_read_daemon(cfg: Config, vehicle_name: String, client: TeslaClien
     }
 
     sink.destroy();
+}
+
+async fn try_refresh_token(cfg: Config, config_path: &PathBuf) -> Result<Config, TeslaError> {
+    let expires_ts = cfg.token.expires_ts;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    if now.as_secs() >= expires_ts {
+        println!("Token expired, try to refresh it");
+        // token expired, refresh
+        let token_result = TeslaClient::refresh_token(cfg.token.refresh_token.as_str()).await;
+
+        match token_result {
+            Ok(token) => {
+                let mut c = cfg.clone();
+                c.token.access_token = token.access_token;
+                c.token.refresh_token = token.refresh_token;
+
+                // calculate new expire time
+                let new_expire_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().add(Duration::from_secs(token.expires_in as u64));
+                c.token.expires_ts = new_expire_ts.as_secs();
+
+                if let Ok(str_content) = toml::to_string(&c) {
+                    let _ = fs::write(&config_path, str_content);
+                }
+
+                Ok(c)
+            }
+            Err(e) => {
+                eprintln!("failed to refresh token: {}", e);
+                Err(e)
+            }
+        }
+    } else {
+        Ok(cfg)
+    }
 }

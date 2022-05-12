@@ -1,22 +1,23 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub token: Token,
     pub global: GlobalConfig,
     pub influx: Option<InfluxConfig>,
-    pub sqlite: Option<SqliteConfig>
+    #[cfg(feature = "sqlite")]
+    pub sqlite: Option<SqliteConfig>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GlobalConfig {
     pub default_vehicle: Option<String>,
     pub default_vehicle_id: Option<u64>,
     pub logspec: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Token {
     pub access_token: String,
     pub refresh_token: String,
@@ -33,6 +34,7 @@ pub struct InfluxConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg(feature = "sqlite")]
 pub struct SqliteConfig {
     pub file: String
 }
@@ -58,6 +60,7 @@ mod tests {
                 logspec: Some("info".to_string()),
             },
             influx: None,
+            #[cfg(feature = "sqlite")]
             sqlite: None,
         };
 

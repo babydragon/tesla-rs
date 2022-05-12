@@ -18,7 +18,7 @@ impl SqliteSink {
         let connection = Connection::open(file).expect("fail to open sqlite");
 
         // init tables
-        connection.execute_batch("
+        let _ = connection.execute_batch("
             BEGIN;
             CREATE TABLE IF NOT EXISTS battery(ts INTEGER PRIMARY KEY, level INTEGER, range REAL) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS driver_state(ts INTEGER PRIMARY KEY, heading INTEGER, latitude REAL, longitude REAL, power REAL, speed INTEGER) WITHOUT ROWID;
@@ -37,11 +37,11 @@ impl Sink for SqliteSink {
         let ts = time.duration_since(UNIX_EPOCH).unwrap().as_secs();
 
         if let Ok(mut stmt) = self.conn.prepare_cached(INSERT_BATTERY) {
-            stmt.execute(params![ts, vehicle_data.charge_state.battery_level, vehicle_data.charge_state.battery_range * 1.6]);
+            let _ = stmt.execute(params![ts, vehicle_data.charge_state.battery_level, vehicle_data.charge_state.battery_range * 1.6]);
         }
 
         if let Ok(mut stmt) = self.conn.prepare_cached(INSERT_DRIVER_STATE) {
-            stmt.execute(params![ts, vehicle_data.drive_state.heading, vehicle_data.drive_state.latitude,
+            let _ = stmt.execute(params![ts, vehicle_data.drive_state.heading, vehicle_data.drive_state.latitude,
                 vehicle_data.drive_state.longitude, vehicle_data.drive_state.power, vehicle_data.drive_state.speed]);
         }
     }
