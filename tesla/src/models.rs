@@ -75,6 +75,8 @@ pub struct DriveState {
     pub heading: u32,
     pub latitude: f64,
     pub longitude: f64,
+    pub native_latitude: f64,
+    pub native_longitude: f64,
     pub power: f64,
     pub timestamp: u64,
     pub shift_state: Option<String>,
