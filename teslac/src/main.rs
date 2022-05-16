@@ -172,7 +172,9 @@ async fn run() -> Result<(), ()> {
                         },
                         influx: None,
                         #[cfg(feature = "sqlite")]
-                        sqlite: None
+                        sqlite: None,
+                        #[cfg(feature = "mqtt")]
+                        mqtt: None,
                     };
 
                     match toml::ser::to_string(&new_config) {
@@ -423,7 +425,7 @@ async fn start_read_daemon(cfg: Config, config_path: &PathBuf, vehicle_name: Str
         return;
     }
 
-    let sink = sink.unwrap();
+    let mut sink = sink.unwrap();
 
     let vehicle = client.get_vehicle_by_name(vehicle_name.as_str()).await
         .ok()

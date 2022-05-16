@@ -8,6 +8,8 @@ pub struct Config {
     pub influx: Option<InfluxConfig>,
     #[cfg(feature = "sqlite")]
     pub sqlite: Option<SqliteConfig>,
+    #[cfg(feature = "mqtt")]
+    pub mqtt: Option<MqttConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -39,6 +41,16 @@ pub struct SqliteConfig {
     pub file: String
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg(feature = "mqtt")]
+pub struct MqttConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub topic: String,
+}
+
 #[cfg(test)]
 mod tests {
     use toml;
@@ -62,6 +74,8 @@ mod tests {
             influx: None,
             #[cfg(feature = "sqlite")]
             sqlite: None,
+            #[cfg(feature = "mqtt")]
+            mqtt: None,
         };
 
         match toml::to_string(&config) {

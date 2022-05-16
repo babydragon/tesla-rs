@@ -23,7 +23,10 @@ influx_db_client = { git="https://github.com/zklapow/InfluxDBClient-rs" }
 native-tls = "0.2.7"
 snafu = "0.6.10"
 rusqlite = {version = "0.25", optional = true}
+rumqttc = {version = "0.12", optional = true}
+serde_json = {version = "1.0", optional = true}
 
 [features]
-default = ["sqlite"]
+default = ["sqlite", "mqtt"]
 sqlite = ["dep:rusqlite"]
+mqtt = ["dep:rumqttc", "dep:serde_json"]

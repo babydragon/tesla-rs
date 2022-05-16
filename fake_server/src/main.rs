@@ -110,6 +110,8 @@ fn handle_connection(mut stream: TcpStream) {
                 heading: 0,
                 latitude: 0.0,
                 longitude: 0.0,
+                native_latitude: 0.0,
+                native_longitude: 0.0,
                 power: 0.0,
                 timestamp: 0,
                 shift_state: None,

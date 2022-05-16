@@ -32,7 +32,7 @@ impl SqliteSink {
 }
 
 impl Sink for SqliteSink {
-    fn save(&self, vehicle_data: &FullVehicleData) {
+    fn save(&mut self, vehicle_data: &FullVehicleData) {
         let time = SystemTime::now();
         let ts = time.duration_since(UNIX_EPOCH).unwrap().as_secs();
 
@@ -46,6 +46,6 @@ impl Sink for SqliteSink {
         }
     }
 
-    fn destroy(&self) {
+    fn destroy(&mut self) {
     }
 }
