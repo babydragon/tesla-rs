@@ -1,4 +1,5 @@
 #[macro_use]
+#[cfg(feature = "influxdb")]
 extern crate influx_db_client;
 #[macro_use]
 extern crate log;
@@ -21,10 +22,13 @@ use dirs::home_dir;
 use tesla::{TeslaClient, TeslaError, OAuthToken};
 
 use crate::config::{Config, GlobalConfig, Token};
+#[cfg(feature = "influxdb")]
 use crate::influx::run_influx_reporter;
 
 mod config;
+#[cfg(feature = "influxdb")]
 mod influx;
+#[cfg(feature = "influxdb")]
 mod error;
 mod sink;
 
@@ -238,7 +242,7 @@ async fn run() -> Result<(), ()> {
             error!("No influx configuration present, cannot start influx reporter!");
             return Err(());
         }
-
+        #[cfg(feature = "influxdb")]
         if let Err(e) = run_influx_reporter(config.influx.unwrap(), vehicle_name, client.clone()).await {
             error!("Error in influx reporter: {}", e);
             exit(1);
